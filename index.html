@@ -60,6 +60,22 @@ dialog p{color:var(--muted);font-size:12px;line-height:1.6}
 .pin{width:18px;height:18px;border-radius:50%;background:var(--pin);border:3px solid var(--sun);box-shadow:0 0 0 2px var(--panel)}
 .gps{width:14px;height:14px;border-radius:50%;background:#2f7bd8;border:2px solid #fff}
 .maplibregl-ctrl-bottom-left,.maplibregl-ctrl-bottom-right{bottom:calc(env(safe-area-inset-bottom,0px) + 200px)}
+/* 로드뷰·AR 화면: 지도 위를 덮고 하단 시간 패널은 그대로 사용 */
+.view{position:fixed;left:0;right:0;top:0;z-index:20;background:#000}
+.view .stage{position:absolute;inset:0}
+.view canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.view video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.vbar{position:absolute;left:0;right:0;top:0;z-index:5;display:flex;gap:6px;flex-wrap:wrap;align-items:center;
+  padding:calc(env(safe-area-inset-top,0px) + 10px) max(12px,env(safe-area-inset-right,0px)) 0 max(12px,env(safe-area-inset-left,0px))}
+.vbar .msg{background:rgba(0,0,0,.6);color:#fff;border-radius:8px;padding:6px 10px;font-size:12px;flex:1;min-width:0}
+.calib{position:absolute;left:max(12px,env(safe-area-inset-left,0px));right:max(12px,env(safe-area-inset-right,0px));bottom:10px;z-index:5;
+  background:rgba(0,0,0,.6);color:#fff;border-radius:10px;padding:8px 10px;font-size:12px;display:grid;gap:4px}
+.calib label{display:flex;align-items:center;gap:8px}
+.calib input{flex:1;height:24px}
+.rvsun{width:26px;height:26px;border-radius:50%;background:#f0a020;border:3px solid #fff;transform:translate(-50%,-50%)}
+.rvsun.down{background:transparent;border:3px dashed #ccc}
+.rvdot{color:#fff;font-size:11px;font-weight:600;text-shadow:0 0 3px #000,0 0 3px #000;transform:translate(-50%,-50%);white-space:nowrap}
+.rvdot::before{content:"";display:block;width:8px;height:8px;margin:0 auto 2px;border-radius:50%;background:#f0a020;border:1px solid #fff}
 </style>
 </head>
 <body>
@@ -82,6 +98,8 @@ dialog p{color:var(--muted);font-size:12px;line-height:1.6}
       <polygon points="11,20 15,11 11,12.5 7,11" fill="#8a9099"/>
     </svg>
   </button>
+  <button class="btn" id="rvBtn" aria-label="로드뷰">로드뷰</button>
+  <button class="btn" id="arBtn" aria-label="카메라 AR">AR</button>
   <button class="btn" id="layerBtn" aria-label="지도 종류">위성</button>
   <button class="btn" id="gpsBtn" aria-label="내 위치">◎</button>
 </div>
@@ -109,11 +127,38 @@ dialog p{color:var(--muted);font-size:12px;line-height:1.6}
   </div>
 </div>
 
+<!-- 로드뷰 화면 -->
+<div class="view" id="rvView" hidden>
+  <div class="stage" id="rvStage"></div>
+  <div class="vbar">
+    <button class="btn" id="rvClose">✕ 지도</button>
+    <button class="btn" id="rvLook">해 쪽 보기</button>
+    <span class="msg" id="rvMsg">로드뷰 불러오는 중…</span>
+  </div>
+</div>
+
+<!-- AR 화면 -->
+<div class="view" id="arView" hidden>
+  <video id="arVideo" playsinline muted autoplay></video>
+  <canvas id="arCanvas"></canvas>
+  <div class="vbar">
+    <button class="btn" id="arClose">✕ 지도</button>
+    <span class="msg" id="arMsg">폰을 세워서 들어 주세요</span>
+  </div>
+  <div class="calib">
+    <label>방향 보정 <input type="range" id="arOff" min="-30" max="30" step="1" value="0"><span id="arOffV">0°</span></label>
+    <label>화각 <input type="range" id="arFov" min="40" max="90" step="1" value="62"><span id="arFovV">62°</span></label>
+  </div>
+</div>
+
 <dialog id="dlg">
   <form method="dialog">
     <b>브이월드 API 키</b>
     <p>키를 넣으면 브이월드 위성·일반 지도와 검색을 써요. 비워두면 OpenStreetMap 지도와 검색으로 동작해요. 키 발급 시 이 페이지 주소(도메인)를 서비스 URL로 등록해야 해요.</p>
     <input id="keyIn" placeholder="API 키" autocomplete="off">
+    <b style="display:block;margin-top:12px">카카오 JavaScript 키 (로드뷰용)</b>
+    <p>카카오 개발자 사이트에서 앱 생성 → JavaScript 키 복사. 플랫폼 → Web 사이트 도메인에 https://hunitto.github.io 등록.</p>
+    <input id="kakaoIn" placeholder="JavaScript 키" autocomplete="off">
     <div class="row" style="margin-top:10px;justify-content:flex-end">
       <button class="btn" value="cancel">취소</button>
       <button class="btn" value="ok">저장</button>
