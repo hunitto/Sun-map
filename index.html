@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>해 방향 지도</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+/* 레이아웃: 전체 화면 지도 + 상단 검색 + 하단 시간 패널 */
+:root{
+  --bg:#f6f7f8; --panel:#ffffff; --fg:#1d2126; --muted:#69707a; --line:#d9dde2;
+  --am:#e0443e; --pm:#2f7bd8; --sun:#f0a020; --below:#8a9099; --pin:#1d2126;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#14171a; --panel:#1e2226; --fg:#eef0f2; --muted:#9aa1aa; --line:#33393f; --pin:#ffffff; color-scheme:dark }
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;font-size:14px}
+#map{position:fixed;inset:0;z-index:0;background:var(--bg)}
+.top{position:fixed;left:0;right:0;top:0;z-index:1000;
+  padding:calc(env(safe-area-inset-top,0px) + 10px) max(12px,env(safe-area-inset-right,0px)) 0 max(12px,env(safe-area-inset-left,0px));
+  display:flex;flex-direction:column;gap:6px;pointer-events:none}
+.search{display:flex;gap:6px;pointer-events:auto}
+.search input{flex:1;min-width:0;height:42px;border:1px solid var(--line);border-radius:10px;padding:0 12px;
+  background:var(--panel);color:var(--fg);font-size:15px}
+.btn{height:42px;min-width:42px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);
+  color:var(--fg);font-size:14px;cursor:pointer}
+.btn:focus-visible,.search input:focus-visible{outline:2px solid var(--pm);outline-offset:1px}
+#results{pointer-events:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;max-height:40vh;overflow:auto}
+#results button{display:block;width:100%;text-align:left;padding:10px 12px;border:0;border-bottom:1px solid var(--line);
+  background:transparent;color:var(--fg);font-size:14px;cursor:pointer}
+#results button small{display:block;color:var(--muted);font-size:12px;margin-top:2px}
+.hint{pointer-events:none;align-self:center;background:var(--panel);color:var(--muted);border:1px solid var(--line);
+  border-radius:20px;padding:5px 12px;font-size:12px}
+.side{position:fixed;right:max(12px,env(safe-area-inset-right,0px));z-index:1000;display:flex;flex-direction:column;gap:8px;
+  bottom:calc(env(safe-area-inset-bottom,0px) + 200px)}
+.panel{position:fixed;left:0;right:0;bottom:0;z-index:1000;background:var(--panel);border-top:1px solid var(--line);
+  border-radius:16px 16px 0 0;
+  padding:12px max(16px,env(safe-area-inset-right,0px)) calc(env(safe-area-inset-bottom,0px) + 14px) max(16px,env(safe-area-inset-left,0px));
+  display:flex;flex-direction:column;gap:10px}
+.row{display:flex;align-items:center;gap:8px}
+.row input[type=date]{flex:1;min-width:0;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 8px;background:var(--bg);color:var(--fg);font-size:14px}
+.row .btn{height:38px}
+.now{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+#time{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums}
+#dir{font-size:15px;font-weight:600}
+#state{color:var(--muted);font-size:13px}
+input[type=range]{width:100%;height:32px;accent-color:var(--sun)}
+.times{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;font-variant-numeric:tabular-nums}
+.times div{background:var(--bg);border-radius:8px;padding:6px 8px}
+.times span{display:block;font-size:11px;color:var(--muted)}
+.times b{font-size:14px}
+.legend{display:flex;gap:12px;font-size:11px;color:var(--muted);flex-wrap:wrap}
+.legend i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:4px}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--fg);max-width:min(420px,92vw)}
+dialog input{width:100%;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 8px;background:var(--bg);color:var(--fg)}
+dialog p{color:var(--muted);font-size:12px;line-height:1.6}
+.pin{width:18px;height:18px;border-radius:50%;background:var(--pin);border:3px solid var(--sun);box-shadow:0 0 0 2px var(--panel)}
+.gps{width:14px;height:14px;border-radius:50%;background:#2f7bd8;border:2px solid #fff}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="top">
+  <form class="search" id="sf">
+    <input id="q" type="search" placeholder="장소·주소 검색 (예: 직산역)" autocomplete="off" aria-label="장소 검색">
+    <button class="btn" type="submit" aria-label="검색">검색</button>
+    <button class="btn" type="button" id="setBtn" aria-label="설정">⚙</button>
+  </form>
+  <div id="results" hidden></div>
+  <div class="hint" id="hint">지도를 길게 누르면 기준점이 바뀌어요</div>
+</div>
+
+<div class="side">
+  <button class="btn" id="layerBtn" aria-label="지도 종류">위성</button>
+  <button class="btn" id="gpsBtn" aria-label="내 위치">◎</button>
+</div>
+
+<div class="panel">
+  <div class="row">
+    <button class="btn" id="prevD" aria-label="전날">◀</button>
+    <input type="date" id="d">
+    <button class="btn" id="nextD" aria-label="다음날">▶</button>
+    <button class="btn" id="nowBtn">지금</button>
+  </div>
+  <div class="now">
+    <span id="time">--:--</span><span id="dir">-</span><span id="state">-</span>
+  </div>
+  <input type="range" id="t" min="0" max="1439" step="1" value="720" aria-label="시간">
+  <div class="times">
+    <div><span>일출</span><b id="tRise">-</b></div>
+    <div><span>남중</span><b id="tNoon">-</b></div>
+    <div><span>일몰</span><b id="tSet">-</b></div>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--am)"></i>남중 전</span>
+    <span><i style="background:var(--pm)"></i>남중 후</span>
+    <span><i style="background:var(--below)"></i>지평선 아래(점선)</span>
+  </div>
+</div>
+
+<dialog id="dlg">
+  <form method="dialog">
+    <b>브이월드 API 키</b>
+    <p>키를 넣으면 브이월드 위성·일반 지도와 검색을 써요. 비워두면 OpenStreetMap 지도와 검색으로 동작해요. 키 발급 시 이 페이지 주소(도메인)를 서비스 URL로 등록해야 해요.</p>
+    <input id="keyIn" placeholder="API 키" autocomplete="off">
+    <div class="row" style="margin-top:10px;justify-content:flex-end">
+      <button class="btn" value="cancel">취소</button>
+      <button class="btn" value="ok" id="keySave">저장</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+/* =========================================================
+   1) 태양 계산 모듈 (순수 함수, 지도와 무관)
+      → 앱 전환 시 그대로 Kotlin/Swift/Dart로 옮기면 됨
+      NOAA 근사식, 방위각은 정북 0° 시계방향
+   ========================================================= */
+const Sun = (() => {
+  const R = Math.PI / 180;
+  function dayOfYear(y, m, d) { return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(y, 0, 0)) / 864e5); }
+  // minutes: 현지시각(분), tz: UTC 오프셋(시간)
+  function position(lat, lon, y, mo, d, minutes, tz) {
+    const n = dayOfYear(y, mo, d);
+    const g = 2 * Math.PI / (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0) ? 366 : 365) * (n - 1 + (minutes / 60 - 12) / 24);
+    const eq = 229.18 * (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g) - 0.014615 * Math.cos(2 * g) - 0.040849 * Math.sin(2 * g));
+    const de = 0.006918 - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g) - 0.006758 * Math.cos(2 * g) + 0.000907 * Math.sin(2 * g) - 0.002697 * Math.cos(3 * g) + 0.00148 * Math.sin(3 * g);
+    const ha = ((minutes + eq + 4 * lon - 60 * tz) / 4 - 180) * R, la = lat * R;
+    const alt = Math.asin(Math.sin(la) * Math.sin(de) + Math.cos(la) * Math.cos(de) * Math.cos(ha));
+    let az = Math.atan2(Math.sin(ha), Math.cos(ha) * Math.sin(la) - Math.tan(de) * Math.cos(la)) / R + 180;
+    return { alt: alt / R, az: (az % 360 + 360) % 360 };
+  }
+  // 일출·일몰(고도 -0.833°, 대기굴절 반영), 남중(최고 고도)
+  function dayEvents(lat, lon, y, mo, d, tz) {
+    let rise = null, set = null, noon = 0, maxAlt = -99, prev = position(lat, lon, y, mo, d, 0, tz).alt;
+    for (let m = 1; m <= 1440; m++) {
+      const a = position(lat, lon, y, mo, d, m, tz).alt;
+      if (prev < -0.833 && a >= -0.833) rise = m - 1 + (-0.833 - prev) / (a - prev);
+      if (prev >= -0.833 && a < -0.833) set = m - 1 + (prev + 0.833) / (prev - a);
+      if (a > maxAlt) { maxAlt = a; noon = m; }
+      prev = a;
+    }
+    return { rise, set, noon, maxAlt };
+  }
+  return { position, dayEvents };
+})();
+
+/* =========================================================
+   2) 상태 + 저장
+   ========================================================= */
+const TZ = 9; // KST 고정 (해외 지원 시 위치별 타임존으로 교체)
+const store = {
+  get(k, f) { try { const v = localStorage.getItem(k); return v === null ? f : JSON.parse(v); } catch (e) { return f; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+};
+const S = {
+  key: store.get('vwKey', ''),
+  layer: store.get('layer', 'sat'),
+  ref: store.get('ref', { lat: 36.889, lng: 127.152 }), // 기본: 천안 직산읍
+  date: null, minutes: 720
+};
+
+/* =========================================================
+   3) 지도 (Leaflet + 브이월드/OSM 타일)
+   ========================================================= */
+const map = L.map('map', { zoomControl: false, attributionControl: true, tap: false }).setView([S.ref.lat, S.ref.lng], 15);
+let base = null;
+function setBase() {
+  if (base) map.removeLayer(base);
+  if (S.key) {
+    const url = S.layer === 'sat'
+      ? `https://api.vworld.kr/req/wmts/1.0.0/${S.key}/Satellite/{z}/{y}/{x}.jpeg`
+      : `https://api.vworld.kr/req/wmts/1.0.0/${S.key}/Base/{z}/{y}/{x}.png`;
+    base = L.tileLayer(url, { maxZoom: 19, minZoom: 6, attribution: '© VWorld' });
+  } else {
+    base = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
+  }
+  base.addTo(map);
+  document.getElementById('layerBtn').textContent = S.layer === 'sat' ? '위성' : '일반';
+  document.getElementById('layerBtn').hidden = !S.key;
+}
+setBase();
+
+const refMarker = L.marker([S.ref.lat, S.ref.lng], { icon: L.divIcon({ className: '', html: '<div class="pin"></div>', iconSize: [18, 18] }), interactive: false }).addTo(map);
+let gpsMarker = null;
+
+// 방향선 레이어 (화면 픽셀 기준 길이 → 줌과 상관없이 같은 크기)
+const rayLine = L.polyline([], { weight: 4, opacity: 0.95, interactive: false }).addTo(map);
+const ringLine = L.polyline([], { weight: 1, opacity: 0.6, dashArray: '3 5', color: '#f0a020', interactive: false }).addTo(map);
+const sunDot = L.circleMarker([0, 0], { radius: 10, weight: 2, interactive: false }).addTo(map);
+
+function setRef(lat, lng, pan) {
+  S.ref = { lat, lng }; store.set('ref', S.ref);
+  refMarker.setLatLng([lat, lng]);
+  if (pan) map.setView([lat, lng], Math.max(map.getZoom(), 15));
+  recalcDay();
+}
+
+/* =========================================================
+   4) 길게 누르기 → 기준점
+   ========================================================= */
+(() => {
+  const el = map.getContainer(); let timer = null, sx = 0, sy = 0;
+  el.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    sx = e.clientX; sy = e.clientY; clearTimeout(timer);
+    timer = setTimeout(() => {
+      const r = el.getBoundingClientRect();
+      const ll = map.containerPointToLatLng([sx - r.left, sy - r.top]);
+      if (navigator.vibrate) navigator.vibrate(30);
+      setRef(ll.lat, ll.lng, false);
+    }, 550);
+  });
+  const cancel = e => { if (!timer) return; if (e.type !== 'pointermove' || Math.hypot(e.clientX - sx, e.clientY - sy) > 10) { clearTimeout(timer); timer = null; } };
+  ['pointermove', 'pointerup', 'pointercancel'].forEach(t => el.addEventListener(t, cancel));
+  map.on('zoomstart', () => { clearTimeout(timer); timer = null; });
+  map.on('contextmenu', e => setRef(e.latlng.lat, e.latlng.lng, false)); // PC 우클릭
+})();
+
+/* =========================================================
+   5) 내 위치 (GPS)
+   ========================================================= */
+document.getElementById('gpsBtn').onclick = () => {
+  if (!navigator.geolocation) return toast('이 브라우저는 위치를 지원하지 않아요');
+  toast('위치 찾는 중…');
+  navigator.geolocation.getCurrentPosition(p => {
+    const { latitude: lat, longitude: lng } = p.coords;
+    if (!gpsMarker) gpsMarker = L.marker([lat, lng], { icon: L.divIcon({ className: '', html: '<div class="gps"></div>', iconSize: [14, 14] }), interactive: false }).addTo(map);
+    else gpsMarker.setLatLng([lat, lng]);
+    setRef(lat, lng, true); toast('');
+  }, err => toast(err.code === 1 ? '위치 권한이 꺼져 있어요. 브라우저 설정에서 허용해 주세요' : '위치를 못 찾았어요. 잠시 후 다시 눌러 주세요'),
+  { enableHighAccuracy: true, timeout: 12000 });
+};
+
+/* =========================================================
+   6) 검색 (브이월드 → 실패 시 OSM Nominatim)
+   ========================================================= */
+function jsonp(url, ms = 7000) {
+  return new Promise((res, rej) => {
+    const cb = '__vw' + Date.now() + Math.floor(Math.random() * 1e4);
+    const s = document.createElement('script');
+    const t = setTimeout(() => { cleanup(); rej(new Error('timeout')); }, ms);
+    function cleanup() { clearTimeout(t); delete window[cb]; s.remove(); }
+    window[cb] = d => { cleanup(); res(d); };
+    s.onerror = () => { cleanup(); rej(new Error('load')); };
+    s.src = url + '&callback=' + cb; document.head.appendChild(s);
+  });
+}
+async function searchVworld(q) {
+  const base = `https://api.vworld.kr/req/search?service=search&request=search&version=2.0&crs=EPSG:4326&size=10&page=1&format=json&errorformat=json&key=${encodeURIComponent(S.key)}&query=${encodeURIComponent(q)}`;
+  const reqs = [base + '&type=place', base + '&type=address&category=road', base + '&type=address&category=parcel'];
+  const out = [];
+  for (const u of reqs) {
+    try {
+      const d = await jsonp(u);
+      const items = d?.response?.result?.items || [];
+      items.forEach(it => out.push({
+        name: it.title || it.address?.road || it.address?.parcel || q,
+        sub: it.address?.road || it.address?.parcel || '',
+        lat: +it.point.y, lng: +it.point.x
+      }));
+    } catch (e) {}
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+async function searchOsm(q) {
+  const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=kr&limit=8&accept-language=ko&q=${encodeURIComponent(q)}`);
+  const d = await r.json();
+  return d.map(x => ({ name: x.display_name.split(',')[0], sub: x.display_name, lat: +x.lat, lng: +x.lon }));
+}
+document.getElementById('sf').onsubmit = async e => {
+  e.preventDefault();
+  const q = document.getElementById('q').value.trim(); if (!q) return;
+  const box = document.getElementById('results'); box.hidden = false; box.innerHTML = '<button disabled>검색 중…</button>';
+  let list = [];
+  try { list = S.key ? await searchVworld(q) : []; } catch (e) {}
+  if (!list.length) { try { list = await searchOsm(q); } catch (e) {} }
+  box.innerHTML = '';
+  if (!list.length) { box.innerHTML = '<button disabled>결과가 없어요. 다른 이름이나 주소로 찾아보세요</button>'; return; }
+  list.forEach(it => {
+    const b = document.createElement('button');
+    b.textContent = it.name;
+    const sm = document.createElement('small'); sm.textContent = it.sub; b.appendChild(sm);
+    b.onclick = () => { box.hidden = true; map.setView([it.lat, it.lng], 16); toast('주변을 길게 눌러 기준점을 정하세요'); };
+    box.appendChild(b);
+  });
+};
+map.on('click', () => { document.getElementById('results').hidden = true; });
+
+/* =========================================================
+   7) 그리기
+   ========================================================= */
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let ev = null;
+function fm(m) { if (m == null) return '-'; m = Math.round(m) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); }
+function dir16(a) { return ['북', '북북동', '북동', '동북동', '동', '동남동', '남동', '남남동', '남', '남남서', '남서', '서남서', '서', '서북서', '북서', '북북서'][Math.round(a / 22.5) % 16]; }
+function ymd() { const [y, m, d] = S.date.split('-').map(Number); return [y, m, d]; }
+
+function recalcDay() {
+  const [y, m, d] = ymd();
+  ev = Sun.dayEvents(S.ref.lat, S.ref.lng, y, m, d, TZ);
+  $('tRise').textContent = ev.rise == null ? '없음' : fm(ev.rise);
+  $('tNoon').textContent = fm(ev.noon);
+  $('tSet').textContent = ev.set == null ? '없음' : fm(ev.set);
+  draw();
+}
+function draw() {
+  if (!ev) return;
+  const [y, mo, d] = ymd(), mins = S.minutes;
+  const p = Sun.position(S.ref.lat, S.ref.lng, y, mo, d, mins, TZ);
+  const up = p.alt > -0.833;
+  const color = !up ? css('--below') : (mins < ev.noon ? css('--am') : css('--pm'));
+
+  const size = map.getSize(), c = map.latLngToContainerPoint([S.ref.lat, S.ref.lng]);
+  const R = Math.min(size.x, size.y) * 0.42;
+  const vx = Math.sin(p.az * Math.PI / 180), vy = -Math.cos(p.az * Math.PI / 180);
+  const end = map.containerPointToLatLng([c.x + vx * R * 1.15, c.y + vy * R * 1.15]);
+  rayLine.setLatLngs([[S.ref.lat, S.ref.lng], end]);
+  rayLine.setStyle({ color, dashArray: up ? null : '8 8' });
+
+  const r = up ? R * (1 - Math.max(p.alt, 0) / 90) : R;
+  sunDot.setLatLng(map.containerPointToLatLng([c.x + vx * r, c.y + vy * r]));
+  sunDot.setStyle({ color: up ? css('--sun') : css('--below'), fillColor: up ? css('--sun') : css('--panel'), fillOpacity: 1 });
+
+  // 오늘 해 궤적 (점선, 고도 반영)
+  const pts = [];
+  for (let m = 0; m <= 1440; m += 6) {
+    const q = Sun.position(S.ref.lat, S.ref.lng, y, mo, d, m, TZ);
+    if (q.alt > 0) { const rr = R * (1 - q.alt / 90), a = q.az * Math.PI / 180; pts.push(map.containerPointToLatLng([c.x + Math.sin(a) * rr, c.y - Math.cos(a) * rr])); }
+  }
+  ringLine.setLatLngs(pts);
+
+  $('time').textContent = fm(mins);
+  $('dir').textContent = `${Math.round(p.az)}° ${dir16(p.az)}`;
+  let st;
+  if (up) st = `고도 ${Math.max(0, p.alt).toFixed(1)}°`;
+  else if (ev.rise != null && mins < ev.rise) st = `일출 전 · ${fm(ev.rise)}에 이 방향에서 떠요`;
+  else st = '일몰 후 · 지평선 아래';
+  $('state').textContent = st;
+}
+map.on('move zoom resize', draw);
+
+/* =========================================================
+   8) 날짜·시간 컨트롤
+   ========================================================= */
+function todayKST() { const n = new Date(Date.now() + (TZ * 60 + new Date().getTimezoneOffset()) * 6e4); return n; }
+function setNow() {
+  const n = todayKST();
+  S.date = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  S.minutes = n.getHours() * 60 + n.getMinutes();
+  $('d').value = S.date; $('t').value = S.minutes; recalcDay();
+}
+function shiftDay(k) {
+  const [y, m, d] = ymd(); const t = new Date(Date.UTC(y, m - 1, d + k));
+  S.date = t.toISOString().slice(0, 10); $('d').value = S.date; recalcDay();
+}
+$('d').onchange = e => { if (e.target.value) { S.date = e.target.value; recalcDay(); } };
+$('t').oninput = e => { S.minutes = +e.target.value; draw(); };
+$('prevD').onclick = () => shiftDay(-1);
+$('nextD').onclick = () => shiftDay(1);
+$('nowBtn').onclick = setNow;
+$('layerBtn').onclick = () => { S.layer = S.layer === 'sat' ? 'base' : 'sat'; store.set('layer', S.layer); setBase(); };
+
+/* 설정 (API 키) */
+$('setBtn').onclick = () => { $('keyIn').value = S.key; $('dlg').showModal(); };
+$('dlg').addEventListener('close', () => {
+  if ($('dlg').returnValue === 'ok') { S.key = $('keyIn').value.trim(); store.set('vwKey', S.key); setBase(); }
+});
+
+/* 안내 문구 */
+let tt = null;
+function toast(msg) { const h = $('hint'); clearTimeout(tt); h.textContent = msg || '지도를 길게 누르면 기준점이 바뀌어요'; if (msg) tt = setTimeout(() => toast(''), 3500); }
+
+setNow();
+</script>
+</body>
+</html>
