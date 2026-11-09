@@ -435,6 +435,9 @@ function draw() {
   else if (ev.rise != null && mins < ev.rise) st = `일출 전 · ${fm(ev.rise)}에 이 방향에서 떠요`;
   else st = '일몰 후 · 지평선 아래';
   $('state').textContent = st;
+  if (typeof RV !== 'undefined' && RV.rv && !$('rvView').hidden) {
+    cancelAnimationFrame(draw._rv); draw._rv = requestAnimationFrame(drawRoadview);
+  }
 }
 map.on('zoom', draw); map.on('resize', draw);
 
@@ -460,10 +463,195 @@ $('nowBtn').onclick = setNow;
 $('layerBtn').onclick = () => { S.layer = S.layer === 'sat' ? 'base' : 'sat'; store.set('layer', S.layer); setBase(); };
 
 /* 설정 (API 키) */
-$('setBtn').onclick = () => { $('keyIn').value = S.key; $('dlg').showModal(); };
+$('setBtn').onclick = () => { $('keyIn').value = S.key; $('kakaoIn').value = store.get('kakaoKey', ''); $('dlg').showModal(); };
 $('dlg').addEventListener('close', () => {
-  if ($('dlg').returnValue === 'ok') { S.key = $('keyIn').value.trim(); store.set('vwKey', S.key); setBase(); }
+  if ($('dlg').returnValue === 'ok') {
+    S.key = $('keyIn').value.trim(); store.set('vwKey', S.key); setBase();
+    store.set('kakaoKey', $('kakaoIn').value.trim());
+  }
 });
+
+/* =========================================================
+   9) 공통: 로드뷰·AR 화면 크기 (하단 패널 위까지)
+   ========================================================= */
+function fitView(v) { v.style.bottom = document.querySelector('.panel').offsetHeight + 'px'; }
+function sunNow() { const [y, mo, d] = ymd(); return Sun.position(S.ref.lat, S.ref.lng, y, mo, d, S.minutes, TZ); }
+function sunAt(lat, lng, m) { const [y, mo, d] = ymd(); return Sun.position(lat, lng, y, mo, d, m, TZ); }
+
+/* =========================================================
+   10) 로드뷰 (카카오맵 JS SDK)
+       해 위치 = 해 방향으로 D미터 떨어진 지점에 높이 D·tan(고도)인 오버레이
+   ========================================================= */
+var RV = { rv: null, pos: null, overlays: [], loaded: false };
+function loadKakao(key) {
+  return new Promise((res, rej) => {
+    if (window.kakao && kakao.maps && kakao.maps.Roadview) return res();
+    const s = document.createElement('script');
+    s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${encodeURIComponent(key)}&autoload=false`;
+    s.onload = () => { try { kakao.maps.load(res); } catch (e) { rej(e); } };
+    s.onerror = () => rej(new Error('load'));
+    document.head.appendChild(s);
+  });
+}
+async function openRoadview() {
+  const key = store.get('kakaoKey', '');
+  if (!key) { toast('⚙에서 카카오 JavaScript 키를 먼저 넣어 주세요'); return; }
+  const v = $('rvView'); fitView(v); v.hidden = false; $('rvMsg').textContent = '로드뷰 불러오는 중…';
+  try { await loadKakao(key); }
+  catch (e) { $('rvMsg').textContent = '카카오 SDK를 못 불러왔어요. 키와 등록 도메인을 확인해 주세요'; return; }
+  if (!RV.rv) {
+    RV.rv = new kakao.maps.Roadview($('rvStage'));
+    kakao.maps.event.addListener(RV.rv, 'init', () => { RV.pos = RV.rv.getPosition(); drawRoadview(); lookAtSun(); });
+    kakao.maps.event.addListener(RV.rv, 'position_changed', () => { RV.pos = RV.rv.getPosition(); drawRoadview(); });
+  }
+  RV.rv.relayout && RV.rv.relayout();
+  const client = new kakao.maps.RoadviewClient(), here = new kakao.maps.LatLng(S.ref.lat, S.ref.lng);
+  const tryR = [50, 150, 300];
+  (function next(i) {
+    if (i >= tryR.length) { $('rvMsg').textContent = '기준점 300m 안에 로드뷰가 없어요. 도로 근처로 기준점을 옮겨 보세요'; return; }
+    client.getNearestPanoId(here, tryR[i], id => {
+      if (!id) return next(i + 1);
+      RV.rv.setPanoId(id, here);
+      $('rvMsg').textContent = `로드뷰 표시 중 (기준점 ${tryR[i]}m 이내)`;
+    });
+  })(0);
+}
+function clearRvOverlays() { RV.overlays.forEach(o => o.setMap(null)); RV.overlays = []; }
+function rvOverlay(lat, lng, az, alt, html) {
+  const D = 200, p = destPoint(lat, lng, az, D);
+  const el = document.createElement('div'); el.innerHTML = html;
+  const o = new kakao.maps.CustomOverlay({ position: new kakao.maps.LatLng(p[1], p[0]), content: el.firstElementChild, xAnchor: 0.5, yAnchor: 0.5 });
+  o.setMap(RV.rv);
+  if (o.setAltitude) o.setAltitude(D * Math.tan(alt * Math.PI / 180));
+  if (o.setRange) o.setRange(D + 300);
+  RV.overlays.push(o);
+}
+function drawRoadview() {
+  if (!RV.rv || !RV.pos || $('rvView').hidden) return;
+  clearRvOverlays();
+  const lat = RV.pos.getLat(), lng = RV.pos.getLng();
+  for (let m = 0; m < 1440; m += 60) {
+    const q = sunAt(lat, lng, m);
+    if (q.alt > 0) rvOverlay(lat, lng, q.az, q.alt, `<div class="rvdot">${String(m / 60).padStart(2, '0')}시</div>`);
+  }
+  const p = sunAt(lat, lng, S.minutes);
+  rvOverlay(lat, lng, p.az, Math.max(p.alt, -2), `<div class="rvsun${p.alt > -0.833 ? '' : ' down'}"></div>`);
+}
+function lookAtSun() {
+  if (!RV.rv) return;
+  const vp = RV.rv.getViewpoint(), p = sunNow();
+  vp.pan = p.az; // 카카오 pan: 정북 0° 기준
+  RV.rv.setViewpoint(vp);
+}
+$('rvBtn').onclick = openRoadview;
+$('rvLook').onclick = lookAtSun;
+$('rvClose').onclick = () => { $('rvView').hidden = true; clearRvOverlays(); };
+
+/* =========================================================
+   11) 카메라 AR (후면 카메라 + 방향 센서)
+       기기 회전행렬로 카메라 시선 계산 → 해 방향을 화면에 투영
+   ========================================================= */
+const AR = { stream: null, alpha: null, beta: 0, gamma: 0, raf: 0, absolute: false };
+store.get('arOff', 0) && ($('arOff').value = store.get('arOff', 0));
+store.get('arFov', 62) && ($('arFov').value = store.get('arFov', 62));
+function onOri(e) {
+  if (e.webkitCompassHeading != null) { AR.alpha = (360 - e.webkitCompassHeading) % 360; AR.absolute = true; }
+  else if (e.alpha != null) { AR.alpha = e.alpha; AR.absolute = AR.absolute || e.absolute === true || e.type === 'deviceorientationabsolute'; }
+  AR.beta = e.beta || 0; AR.gamma = e.gamma || 0;
+}
+async function openAR() {
+  const v = $('arView'); fitView(v); v.hidden = false; $('arMsg').textContent = '카메라·센서 권한을 허용해 주세요';
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const r = await DeviceOrientationEvent.requestPermission(); if (r !== 'granted') throw new Error('ori');
+    }
+  } catch (e) { $('arMsg').textContent = '방향 센서 권한이 거부됐어요'; }
+  if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute', onOri);
+  else window.addEventListener('deviceorientation', onOri);
+  try {
+    AR.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    $('arVideo').srcObject = AR.stream;
+  } catch (e) { $('arMsg').textContent = '카메라를 못 열었어요. 권한을 확인해 주세요 (화면은 센서만으로 표시)'; }
+  cancelAnimationFrame(AR.raf); arLoop();
+}
+function closeAR() {
+  $('arView').hidden = true; cancelAnimationFrame(AR.raf);
+  window.removeEventListener('deviceorientationabsolute', onOri); window.removeEventListener('deviceorientation', onOri);
+  if (AR.stream) { AR.stream.getTracks().forEach(t => t.stop()); AR.stream = null; }
+}
+// 기기 좌표 → 세계(동,북,위) 회전행렬 R = Rz(a)·Rx(b)·Ry(g)
+function rotMatrix(a, b, g) {
+  const [ca, sa, cb, sb, cg, sg] = [a, a, b, b, g, g].map((x, i) => (i % 2 ? Math.sin : Math.cos)(x * Math.PI / 180));
+  return [
+    [ca * cg - sa * sb * sg, -cb * sa, ca * sg + cg * sa * sb],
+    [cg * sa + ca * sb * sg, ca * cb, sa * sg - ca * cg * sb],
+    [-cb * sg, sb, cb * cg]
+  ];
+}
+function arLoop() {
+  AR.raf = requestAnimationFrame(arLoop);
+  const c = $('arCanvas'), dpr = window.devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
+  if (c.width !== W * dpr || c.height !== H * dpr) { c.width = W * dpr; c.height = H * dpr; }
+  const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  if (AR.alpha == null) { $('arMsg').textContent = '방향 센서 값을 기다리는 중… (PC는 지원 안 됨)'; return; }
+
+  const off = +$('arOff').value, fov = +$('arFov').value;
+  const so = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+  const M = rotMatrix(AR.alpha - off, AR.beta, AR.gamma);
+  const col = i => [M[0][i], M[1][i], M[2][i]];
+  let right = col(0), up = col(1); const fwd = col(2).map(x => -x);
+  if (so === 90 || so === -270) { const t = right; right = up.map(x => -x); up = t; }
+  else if (so === 270 || so === -90) { const t = right; right = up; up = t.map(x => -x); }
+  const f = (H / 2) / Math.tan(fov / 2 * Math.PI / 180);
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const proj = (az, alt) => {
+    const A = az * Math.PI / 180, E = alt * Math.PI / 180, s = [Math.sin(A) * Math.cos(E), Math.cos(A) * Math.cos(E), Math.sin(E)];
+    const z = dot(s, fwd); if (z <= 0.05) return null;
+    return [W / 2 + f * dot(s, right) / z, H / 2 - f * dot(s, up) / z];
+  };
+
+  // 지평선 + 방위 눈금
+  g.lineWidth = 1.5; g.strokeStyle = 'rgba(255,255,255,.7)'; g.beginPath(); let started = false;
+  for (let az = 0; az <= 360; az += 2) { const p = proj(az, 0); if (p) { started ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); started = true; } else started = false; }
+  g.stroke();
+  g.font = '600 14px sans-serif'; g.textAlign = 'center'; g.fillStyle = '#fff';
+  [['북', 0], ['북동', 45], ['동', 90], ['남동', 135], ['남', 180], ['남서', 225], ['서', 270], ['북서', 315]].forEach(([t, az]) => {
+    const p = proj(az, 0); if (p) { g.fillRect(p[0] - 1, p[1] - 8, 2, 16); g.fillText(t, p[0], p[1] + 26); }
+  });
+
+  // 하루 해 궤적 + 시각 라벨
+  const lat = S.ref.lat, lng = S.ref.lng;
+  g.strokeStyle = '#f0a020'; g.lineWidth = 3; g.setLineDash([6, 6]); g.beginPath(); started = false;
+  for (let m = 0; m <= 1440; m += 5) { const q = sunAt(lat, lng, m); const p = q.alt > -2 ? proj(q.az, q.alt) : null; if (p) { started ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); started = true; } else started = false; }
+  g.stroke(); g.setLineDash([]);
+  g.font = '600 12px sans-serif';
+  for (let m = 0; m < 1440; m += 60) {
+    const q = sunAt(lat, lng, m); if (q.alt <= 0) continue; const p = proj(q.az, q.alt); if (!p) continue;
+    g.fillStyle = '#f0a020'; g.beginPath(); g.arc(p[0], p[1], 4, 0, 7); g.fill();
+    g.fillStyle = '#fff'; g.fillText(String(m / 60).padStart(2, '0') + '시', p[0], p[1] - 9);
+  }
+
+  // 현재 시각 해
+  const s = sunNow(), up0 = s.alt > -0.833, p = proj(s.az, s.alt);
+  if (p) {
+    g.beginPath(); g.arc(p[0], p[1], 18, 0, 7);
+    if (up0) { g.fillStyle = '#f0a020'; g.fill(); g.lineWidth = 3; g.strokeStyle = '#fff'; g.stroke(); }
+    else { g.setLineDash([4, 4]); g.lineWidth = 3; g.strokeStyle = '#ccc'; g.stroke(); g.setLineDash([]); }
+    $('arMsg').textContent = `${fm(S.minutes)} 해 ${Math.round(s.az)}° ${dir16(s.az)} · 고도 ${s.alt.toFixed(1)}°` + (AR.absolute ? '' : ' · 나침반 기준 아님, 보정 필요');
+  } else {
+    // 화면 밖이면 가장자리에 화살표로 방향 안내
+    const fwdAz = Math.atan2(fwd[0], fwd[1]) * 180 / Math.PI;
+    let d = ((s.az - fwdAz + 540) % 360) - 180;
+    $('arMsg').textContent = `해는 ${d > 0 ? '오른쪽' : '왼쪽'}으로 ${Math.abs(Math.round(d))}° (${Math.round(s.az)}° ${dir16(s.az)})`;
+    g.fillStyle = '#f0a020'; g.font = '700 34px sans-serif';
+    g.fillText(d > 0 ? '▶' : '◀', d > 0 ? W - 28 : 28, H / 2);
+  }
+}
+$('arOff').oninput = e => { $('arOffV').textContent = e.target.value + '°'; store.set('arOff', +e.target.value); };
+$('arFov').oninput = e => { $('arFovV').textContent = e.target.value + '°'; store.set('arFov', +e.target.value); };
+$('arOffV').textContent = $('arOff').value + '°'; $('arFovV').textContent = $('arFov').value + '°';
+$('arBtn').onclick = openAR;
+$('arClose').onclick = closeAR;
 
 /* 안내 문구 */
 let tt = null;
